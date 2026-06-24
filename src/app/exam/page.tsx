@@ -6,36 +6,68 @@ import { supabase } from "../../lib/supabase";
 import { QUESTIONS, EXAM_DURATION_SECONDS } from "../../data/questions";
 import Leaderboard from "../../components/Leaderboard";
 
+type User = { id: string; email: string };
+
 export default function ExamPage() {
   const router = useRouter();
-  const [user, setUser] = useState<{ id: string; email: string } | null>(null);
-  const [loading, setLoading] = useState(true);
-  
+
+  const [user, setUser]         = useState<User | null>(null);
+  const [loading, setLoading]   = useState(true);
+  // "active" = taking exam | "ended" = just finished | "completed" = already done before (reload)
+  const [status, setStatus]     = useState<"active" | "ended" | "completed">("active");
+
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [secondsLeft, setSecondsLeft] = useState(EXAM_DURATION_SECONDS);
-  const [status, setStatus] = useState<"active" | "ended">("active");
+  const [selected, setSelected]         = useState<string | null>(null);
+  const [submitting, setSubmitting]     = useState(false);
+  const [secondsLeft, setSecondsLeft]   = useState(EXAM_DURATION_SECONDS);
 
   const currentQuestion = QUESTIONS[currentIndex];
 
+  // ── 1. Auth + completion check on mount ─────────────────────────
   useEffect(() => {
-    const raw = localStorage.getItem("mini-quiz-user");
-    if (!raw) {
-      router.replace("/");
-      return;
+    async function init() {
+      const { data: { session } } = await supabase.auth.getSession();
+
+      if (!session) {
+        router.replace("/");
+        return;
+      }
+
+      const authUser = session.user;
+
+      // Fetch the user row — upsert so it always exists
+      const { data: row, error } = await supabase
+        .from("users")
+        .upsert({ id: authUser.id, email: authUser.email, has_completed: false }, { onConflict: "id", ignoreDuplicates: true })
+        .select("id, email, has_completed")
+        .maybeSingle();
+
+      // If upsert returned nothing (row existed), just select
+      const { data: existing } = row
+        ? { data: row }
+        : await supabase.from("users").select("id, email, has_completed").eq("id", authUser.id).single();
+
+      const userRow = row ?? existing;
+
+      setUser({ id: authUser.id, email: authUser.email! });
+
+      if (userRow?.has_completed) {
+        setStatus("completed"); // already finished — show leaderboard only
+      }
+
+      setLoading(false);
     }
-    setUser(JSON.parse(raw));
-    setLoading(false);
+    init();
   }, [router]);
 
+  // ── 2. Countdown timer ──────────────────────────────────────────
   useEffect(() => {
     if (loading || status !== "active") return;
     const interval = setInterval(() => {
       setSecondsLeft((prev) => {
         if (prev <= 1) {
           clearInterval(interval);
-          setStatus("ended");
+          handleTimeUp();
           return 0;
         }
         return prev - 1;
@@ -44,6 +76,13 @@ export default function ExamPage() {
     return () => clearInterval(interval);
   }, [loading, status]);
 
+  async function handleTimeUp() {
+    if (!user) return;
+    await supabase.from("users").update({ has_completed: true }).eq("id", user.id);
+    setStatus("ended");
+  }
+
+  // ── 3. Submit answer & advance ──────────────────────────────────
   async function handleNextQuestion() {
     if (!user || !selected || submitting) return;
     setSubmitting(true);
@@ -62,6 +101,8 @@ export default function ExamPage() {
         setCurrentIndex((prev) => prev + 1);
         setSelected(null);
       } else {
+        // Last question — mark as completed in DB
+        await supabase.from("users").update({ has_completed: true }).eq("id", user.id);
         setStatus("ended");
       }
     } catch (err) {
@@ -71,24 +112,52 @@ export default function ExamPage() {
     }
   }
 
-  if (loading) return <div className="p-8 text-center text-slate-400">Loading exam terminal...</div>;
+  // ── Loading splash ───────────────────────────────────────────────
+  if (loading) {
+    return (
+      <main className="flex min-h-screen items-center justify-center">
+        <p className="text-slate-400 text-sm animate-pulse">Loading exam...</p>
+      </main>
+    );
+  }
 
-  if (status === "ended") {
+  // ── Already completed (reload scenario) ─────────────────────────
+  if (status === "completed") {
     return (
       <main className="mx-auto flex max-w-2xl flex-col gap-8 px-6 py-12">
         <div className="rounded-2xl border border-slate-800 bg-slate-900 p-8 text-center shadow-xl">
-          <h1 className="text-2xl font-bold text-emerald-400">Exam Finished!</h1>
-          <p className="mt-2 text-slate-400">Your final answers are securely recorded. View your rank below.</p>
+          <div className="mb-3 text-4xl">✅</div>
+          <h1 className="text-2xl font-bold text-emerald-400">You've Already Completed This Exam</h1>
+          <p className="mt-2 text-slate-400">
+            Each student can only take the exam once. Here's the current live leaderboard.
+          </p>
         </div>
         <Leaderboard />
       </main>
     );
   }
 
+  // ── Just finished (same session, no reload) ──────────────────────
+  if (status === "ended") {
+    return (
+      <main className="mx-auto flex max-w-2xl flex-col gap-8 px-6 py-12">
+        <div className="rounded-2xl border border-slate-800 bg-slate-900 p-8 text-center shadow-xl">
+          <div className="mb-3 text-4xl">🎉</div>
+          <h1 className="text-2xl font-bold text-emerald-400">Exam Finished!</h1>
+          <p className="mt-2 text-slate-400">Your answers are recorded. View your rank below.</p>
+        </div>
+        <Leaderboard />
+      </main>
+    );
+  }
+
+  // ── Active exam ──────────────────────────────────────────────────
   return (
     <main className="mx-auto flex max-w-2xl flex-col gap-6 px-6 py-12">
       <header className="flex items-center justify-between">
-        <span className="text-sm font-medium text-slate-400">Question {currentIndex + 1} of {QUESTIONS.length}</span>
+        <span className="text-sm font-medium text-slate-400">
+          Question {currentIndex + 1} of {QUESTIONS.length}
+        </span>
         <span className="rounded-full bg-slate-800 px-3 py-1 text-sm font-semibold text-slate-200">
           ⏱ {Math.floor(secondsLeft / 60)}:{(secondsLeft % 60).toString().padStart(2, "0")}
         </span>
@@ -103,10 +172,18 @@ export default function ExamPage() {
               type="button"
               onClick={() => setSelected(opt.key)}
               className={`flex items-center gap-3 rounded-xl border px-4 py-3 text-left transition ${
-                selected === opt.key ? "border-indigo-500 bg-indigo-500/10 text-white" : "border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-600"
+                selected === opt.key
+                  ? "border-indigo-500 bg-indigo-500/10 text-white"
+                  : "border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-600"
               }`}
             >
-              <span className={`flex h-7 w-7 items-center justify-center rounded-full border text-sm font-semibold ${selected === opt.key ? "border-indigo-400 bg-indigo-500 text-white" : "border-slate-600 text-slate-400"}`}>{opt.key}</span>
+              <span className={`flex h-7 w-7 items-center justify-center rounded-full border text-sm font-semibold ${
+                selected === opt.key
+                  ? "border-indigo-400 bg-indigo-500 text-white"
+                  : "border-slate-600 text-slate-400"
+              }`}>
+                {opt.key}
+              </span>
               <span>{opt.label}</span>
             </button>
           ))}
@@ -118,7 +195,11 @@ export default function ExamPage() {
           disabled={!selected || submitting}
           className="mt-6 w-full rounded-lg bg-indigo-500 px-4 py-3 font-medium text-white transition hover:bg-indigo-400 disabled:opacity-50"
         >
-          {submitting ? "Saving Answer..." : currentIndex === QUESTIONS.length - 1 ? "Complete & Finish" : "Submit & Next"}
+          {submitting
+            ? "Saving Answer..."
+            : currentIndex === QUESTIONS.length - 1
+            ? "Complete & Finish"
+            : "Submit & Next"}
         </button>
       </section>
     </main>
