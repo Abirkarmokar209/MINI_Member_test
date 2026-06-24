@@ -35,7 +35,6 @@ export default function AdminPage() {
         .neq("id", "00000000-0000-0000-0000-000000000000");
       if (error) throw error;
 
-      // Also reset has_completed so students can retake
       await supabase
         .from("users")
         .update({ has_completed: false })
@@ -50,9 +49,10 @@ export default function AdminPage() {
     }
   }
 
+  // Hard redirect — bypasses any router/session cache issues
   async function handleLogout() {
     await supabase.auth.signOut();
-    router.push("/");
+    window.location.href = "/";
   }
 
   if (!verified) return (
