@@ -11,10 +11,9 @@ type User = { id: string; email: string };
 export default function ExamPage() {
   const router = useRouter();
 
-  const [user, setUser]         = useState<User | null>(null);
-  const [loading, setLoading]   = useState(true);
-  // "active" = taking exam | "ended" = just finished | "completed" = already done before (reload)
-  const [status, setStatus]     = useState<"active" | "ended" | "completed">("active");
+  const [user, setUser]       = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [status, setStatus]   = useState<"active" | "ended" | "completed">("active");
 
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selected, setSelected]         = useState<string | null>(null);
@@ -23,53 +22,41 @@ export default function ExamPage() {
 
   const currentQuestion = QUESTIONS[currentIndex];
 
-  // ── 1. Auth + completion check on mount ─────────────────────────
+  // ── Auth + completion check ──────────────────────────────────────
   useEffect(() => {
     async function init() {
       const { data: { session } } = await supabase.auth.getSession();
-
-      if (!session) {
-        router.replace("/");
-        return;
-      }
+      if (!session) { router.replace("/"); return; }
 
       const authUser = session.user;
 
-      // Fetch the user row — upsert so it always exists
-      const { data: row, error } = await supabase
+      const { data: row } = await supabase
         .from("users")
-        .upsert({ id: authUser.id, email: authUser.email, has_completed: false }, { onConflict: "id", ignoreDuplicates: true })
+        .upsert(
+          { id: authUser.id, email: authUser.email, has_completed: false },
+          { onConflict: "id", ignoreDuplicates: true }
+        )
         .select("id, email, has_completed")
         .maybeSingle();
 
-      // If upsert returned nothing (row existed), just select
       const { data: existing } = row
         ? { data: row }
         : await supabase.from("users").select("id, email, has_completed").eq("id", authUser.id).single();
 
       const userRow = row ?? existing;
-
       setUser({ id: authUser.id, email: authUser.email! });
-
-      if (userRow?.has_completed) {
-        setStatus("completed"); // already finished — show leaderboard only
-      }
-
+      if (userRow?.has_completed) setStatus("completed");
       setLoading(false);
     }
     init();
   }, [router]);
 
-  // ── 2. Countdown timer ──────────────────────────────────────────
+  // ── Countdown ────────────────────────────────────────────────────
   useEffect(() => {
     if (loading || status !== "active") return;
     const interval = setInterval(() => {
       setSecondsLeft((prev) => {
-        if (prev <= 1) {
-          clearInterval(interval);
-          handleTimeUp();
-          return 0;
-        }
+        if (prev <= 1) { clearInterval(interval); handleTimeUp(); return 0; }
         return prev - 1;
       });
     }, 1000);
@@ -82,13 +69,16 @@ export default function ExamPage() {
     setStatus("ended");
   }
 
-  // ── 3. Submit answer & advance ──────────────────────────────────
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    router.push("/");
+  }
+
+  // ── Submit answer ────────────────────────────────────────────────
   async function handleNextQuestion() {
     if (!user || !selected || submitting) return;
     setSubmitting(true);
-
     const isCorrect = selected === currentQuestion.correctOption;
-
     try {
       await supabase.from("submissions").insert({
         student_id: user.id,
@@ -96,12 +86,10 @@ export default function ExamPage() {
         selected_option: selected,
         is_correct: isCorrect,
       });
-
       if (currentIndex < QUESTIONS.length - 1) {
         setCurrentIndex((prev) => prev + 1);
         setSelected(null);
       } else {
-        // Last question — mark as completed in DB
         await supabase.from("users").update({ has_completed: true }).eq("id", user.id);
         setStatus("ended");
       }
@@ -112,7 +100,7 @@ export default function ExamPage() {
     }
   }
 
-  // ── Loading splash ───────────────────────────────────────────────
+  // ── Loading ──────────────────────────────────────────────────────
   if (loading) {
     return (
       <main className="flex min-h-screen items-center justify-center">
@@ -121,26 +109,44 @@ export default function ExamPage() {
     );
   }
 
-  // ── Already completed (reload scenario) ─────────────────────────
+  // ── Shared top bar (shown on completed + ended screens) ──────────
+  function TopBar() {
+    return (
+      <header className="flex items-center justify-between">
+        <div>
+          <p className="text-xs text-slate-500">Logged in as</p>
+          <p className="text-sm font-medium text-slate-300">{user?.email}</p>
+        </div>
+        <button
+          onClick={handleLogout}
+          className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 transition hover:border-slate-500 hover:text-white"
+        >
+          Log Out
+        </button>
+      </header>
+    );
+  }
+
+  // ── Already completed (reload) ───────────────────────────────────
   if (status === "completed") {
     return (
-      <main className="mx-auto flex max-w-2xl flex-col gap-8 px-6 py-12">
+      <main className="mx-auto flex max-w-2xl flex-col gap-6 px-6 py-12">
+        <TopBar />
         <div className="rounded-2xl border border-slate-800 bg-slate-900 p-8 text-center shadow-xl">
           <div className="mb-3 text-4xl">✅</div>
           <h1 className="text-2xl font-bold text-emerald-400">You've Already Completed This Exam</h1>
-          <p className="mt-2 text-slate-400">
-            Each student can only take the exam once. Here's the current live leaderboard.
-          </p>
+          <p className="mt-2 text-slate-400">Each student can only take the exam once. Here's the live leaderboard.</p>
         </div>
         <Leaderboard />
       </main>
     );
   }
 
-  // ── Just finished (same session, no reload) ──────────────────────
+  // ── Just finished ────────────────────────────────────────────────
   if (status === "ended") {
     return (
-      <main className="mx-auto flex max-w-2xl flex-col gap-8 px-6 py-12">
+      <main className="mx-auto flex max-w-2xl flex-col gap-6 px-6 py-12">
+        <TopBar />
         <div className="rounded-2xl border border-slate-800 bg-slate-900 p-8 text-center shadow-xl">
           <div className="mb-3 text-4xl">🎉</div>
           <h1 className="text-2xl font-bold text-emerald-400">Exam Finished!</h1>
@@ -154,15 +160,32 @@ export default function ExamPage() {
   // ── Active exam ──────────────────────────────────────────────────
   return (
     <main className="mx-auto flex max-w-2xl flex-col gap-6 px-6 py-12">
-      <header className="flex items-center justify-between">
-        <span className="text-sm font-medium text-slate-400">
-          Question {currentIndex + 1} of {QUESTIONS.length}
-        </span>
-        <span className="rounded-full bg-slate-800 px-3 py-1 text-sm font-semibold text-slate-200">
+
+      {/* Header: email + logout on left/right, timer centre */}
+      <header className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <p className="text-xs text-slate-500">Logged in as</p>
+          <p className="truncate text-sm font-medium text-slate-300">{user?.email}</p>
+        </div>
+
+        <span className="shrink-0 rounded-full bg-slate-800 px-3 py-1 text-sm font-semibold text-slate-200">
           ⏱ {Math.floor(secondsLeft / 60)}:{(secondsLeft % 60).toString().padStart(2, "0")}
         </span>
+
+        <button
+          onClick={handleLogout}
+          className="shrink-0 rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 transition hover:border-slate-500 hover:text-white"
+        >
+          Log Out
+        </button>
       </header>
 
+      {/* Progress */}
+      <p className="text-sm font-medium text-slate-400">
+        Question {currentIndex + 1} of {QUESTIONS.length}
+      </p>
+
+      {/* Question card */}
       <section className="rounded-2xl border border-slate-800 bg-slate-900 p-8 shadow-xl">
         <h2 className="mb-6 text-xl font-medium">{currentQuestion.text}</h2>
         <div className="flex flex-col gap-3">
@@ -177,7 +200,7 @@ export default function ExamPage() {
                   : "border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-600"
               }`}
             >
-              <span className={`flex h-7 w-7 items-center justify-center rounded-full border text-sm font-semibold ${
+              <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-sm font-semibold ${
                 selected === opt.key
                   ? "border-indigo-400 bg-indigo-500 text-white"
                   : "border-slate-600 text-slate-400"
