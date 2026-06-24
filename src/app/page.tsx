@@ -16,16 +16,12 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // On mount: if a Supabase session already exists, redirect immediately
+  // On mount: if session already exists, redirect immediately
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session) {
         const userEmail = session.user.email?.toLowerCase();
-        if (userEmail === ADMIN_EMAIL) {
-          router.replace("/admin");
-        } else {
-          router.replace("/exam");
-        }
+        router.replace(userEmail === ADMIN_EMAIL ? "/admin" : "/exam");
       } else {
         setLoading(false);
       }
@@ -37,9 +33,9 @@ export default function LoginPage() {
     setError(null);
 
     const trimmedEmail = email.trim().toLowerCase();
-    const trimmedPass = password.trim();
+    const trimmedPass  = password.trim();
 
-    if (!trimmedEmail || !trimmedEmail.includes("@")) {
+    if (!trimmedEmail.includes("@")) {
       setError("Please enter a valid email address.");
       return;
     }
@@ -51,19 +47,20 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      // ── Admin shortcut (no Supabase Auth needed) ─────────────────
+      // ── Admin: only ever sign in, never sign up via the form ─────
       if (trimmedEmail === ADMIN_EMAIL) {
-        const { data, error: signInErr } = await supabase.auth.signInWithPassword({
+        const { error: signInErr } = await supabase.auth.signInWithPassword({
           email: trimmedEmail,
           password: trimmedPass,
         });
         if (signInErr) {
-          // Try registering admin account if first time
-          const { error: signUpErr } = await supabase.auth.signUp({
-            email: trimmedEmail,
-            password: trimmedPass,
-          });
-          if (signUpErr) throw signUpErr;
+          // Account doesn't exist yet — create it once using the service
+          // role is not available client-side, so we inform the admin.
+          setError(
+            "Admin account not found. Go to Supabase → Authentication → Users and create abir@209.com manually, then come back and sign in."
+          );
+          setLoading(false);
+          return;
         }
         router.push("/admin");
         return;
@@ -71,24 +68,21 @@ export default function LoginPage() {
       // ─────────────────────────────────────────────────────────────
 
       if (mode === "register") {
-        // Register a new student
         const { data, error: signUpErr } = await supabase.auth.signUp({
           email: trimmedEmail,
           password: trimmedPass,
         });
         if (signUpErr) throw signUpErr;
 
-        // Also insert into public users table so leaderboard can find them
+        // Insert into public users table
         if (data.user) {
-          await supabase.from("users").upsert({
-            id: data.user.id,
-            email: trimmedEmail,
-            has_completed: false,
-          });
+          await supabase.from("users").upsert(
+            { id: data.user.id, email: trimmedEmail, has_completed: false },
+            { onConflict: "id", ignoreDuplicates: true }
+          );
         }
         router.push("/exam");
       } else {
-        // Login existing student
         const { error: signInErr } = await supabase.auth.signInWithPassword({
           email: trimmedEmail,
           password: trimmedPass,
@@ -114,7 +108,6 @@ export default function LoginPage() {
     <main className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center px-6">
       <div className="w-full rounded-2xl border border-slate-800 bg-slate-900 p-8 shadow-xl">
 
-        {/* Title */}
         <h1 className="mb-1 text-2xl font-semibold tracking-tight">
           {mode === "login" ? "Student Login" : "Create Account"}
         </h1>
