@@ -1,21 +1,19 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import { supabase } from "../lib/supabase";
 
 const ADMIN_EMAIL = "abir@209.com";
 type AuthMode = "login" | "register";
 
 export default function LoginPage() {
-  const router  = useRouter();
-  const [mode, setMode]       = useState<AuthMode>("login");
-  const [email, setEmail]     = useState("");
+  const [mode, setMode]         = useState<AuthMode>("login");
+  const [email, setEmail]       = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError]     = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [error, setError]       = useState<string | null>(null);
+  const [loading, setLoading]   = useState(true);
 
-  // If a session already exists skip the login page entirely
+  // If session already exists, redirect immediately
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session) {
@@ -26,6 +24,22 @@ export default function LoginPage() {
       }
     });
   }, []);
+
+  // Helper: turn any thrown value into a readable string
+  function getErrorMessage(err: unknown): string {
+    if (!err) return "An unexpected error occurred.";
+    if (typeof err === "string") return err;
+    if (typeof err === "object") {
+      const e = err as Record<string, unknown>;
+      if (typeof e.message === "string" && e.message.trim()) return e.message;
+      if (typeof e.msg === "string" && e.msg.trim()) return e.msg;
+      if (typeof e.error_description === "string") return e.error_description;
+      // Last resort: stringify but strip braces if it's just "{}"
+      const s = JSON.stringify(err);
+      if (s && s !== "{}") return s;
+    }
+    return "An unexpected error occurred. Please try again.";
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -47,32 +61,69 @@ export default function LoginPage() {
 
     try {
       if (mode === "register") {
-        // ── Register new student ──────────────────────────────────
+        // ── Register ────────────────────────────────────────────────
         const { data, error: signUpErr } = await supabase.auth.signUp({
           email: trimmedEmail,
           password: trimmedPass,
         });
-        if (signUpErr) throw signUpErr;
-        if (data.user) {
-          await supabase.from("users").upsert(
-            { id: data.user.id, email: trimmedEmail, has_completed: false },
-            { onConflict: "id", ignoreDuplicates: true }
-          );
+
+        if (signUpErr) {
+          setError(getErrorMessage(signUpErr));
+          setLoading(false);
+          return;
         }
+
+        // signUp can succeed but return null user if email confirmation
+        // is enabled — catch that case clearly
+        if (!data.user) {
+          setError(
+            "Registration submitted but email confirmation may be required. " +
+            "Ask your admin to disable email confirmation in Supabase."
+          );
+          setLoading(false);
+          return;
+        }
+
+        // Insert into public users table (best effort — don't block on failure)
+        await supabase.from("users").upsert(
+          { id: data.user.id, email: trimmedEmail, has_completed: false },
+          { onConflict: "id", ignoreDuplicates: true }
+        );
+
         window.location.href = "/exam";
+
       } else {
-        // ── Login ─────────────────────────────────────────────────
+        // ── Login ────────────────────────────────────────────────────
         const { data, error: signInErr } = await supabase.auth.signInWithPassword({
           email: trimmedEmail,
           password: trimmedPass,
         });
-        if (signInErr) throw signInErr;
+
+        if (signInErr) {
+          // Give friendlier messages for common cases
+          const msg = getErrorMessage(signInErr);
+          if (msg.toLowerCase().includes("invalid login")) {
+            setError("Incorrect email or password. Please try again.");
+          } else if (msg.toLowerCase().includes("email not confirmed")) {
+            setError("Email not confirmed. Ask your admin to disable email confirmation in Supabase.");
+          } else {
+            setError(msg);
+          }
+          setLoading(false);
+          return;
+        }
+
+        if (!data.user) {
+          setError("Login failed. Please try again.");
+          setLoading(false);
+          return;
+        }
 
         const loggedEmail = data.user.email?.toLowerCase();
         window.location.href = loggedEmail === ADMIN_EMAIL ? "/admin" : "/exam";
       }
-    } catch (err: any) {
-      setError(err.message || "An unexpected error occurred.");
+    } catch (err: unknown) {
+      setError(getErrorMessage(err));
       setLoading(false);
     }
   }
@@ -102,7 +153,9 @@ export default function LoginPage() {
             type="button"
             onClick={() => { setMode("login"); setError(null); }}
             className={`flex-1 rounded-md py-2 text-sm font-medium transition ${
-              mode === "login" ? "bg-indigo-500 text-white" : "text-slate-400 hover:text-slate-200"
+              mode === "login"
+                ? "bg-indigo-500 text-white"
+                : "text-slate-400 hover:text-slate-200"
             }`}
           >
             Login
@@ -111,7 +164,9 @@ export default function LoginPage() {
             type="button"
             onClick={() => { setMode("register"); setError(null); }}
             className={`flex-1 rounded-md py-2 text-sm font-medium transition ${
-              mode === "register" ? "bg-indigo-500 text-white" : "text-slate-400 hover:text-slate-200"
+              mode === "register"
+                ? "bg-indigo-500 text-white"
+                : "text-slate-400 hover:text-slate-200"
             }`}
           >
             Register
@@ -141,10 +196,15 @@ export default function LoginPage() {
               placeholder="••••••••"
               className="rounded-lg border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-slate-100 outline-none ring-indigo-500 focus:ring-2"
             />
+            {mode === "register" && (
+              <p className="text-xs text-slate-500">Minimum 6 characters</p>
+            )}
           </div>
 
           {error && (
-            <p className="rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-400">{error}</p>
+            <p className="rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-400 break-words">
+              {error}
+            </p>
           )}
 
           <button
