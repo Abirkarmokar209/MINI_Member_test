@@ -7,13 +7,17 @@ import { QUESTIONS, EXAM_DURATION_SECONDS } from "../../data/questions";
 import Leaderboard from "../../components/Leaderboard";
 
 type User = { id: string; email: string };
+// "lobby"     = logged in, not started yet     → show welcome + Start Exam button
+// "active"    = exam in progress               → show questions
+// "ended"     = just finished this session     → show leaderboard
+// "completed" = already finished before        → show leaderboard only
+type Status = "lobby" | "active" | "ended" | "completed";
 
 export default function ExamPage() {
   const router = useRouter();
-
-  const [user, setUser]       = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [status, setStatus]   = useState<"active" | "ended" | "completed">("active");
+  const [user, setUser]         = useState<User | null>(null);
+  const [loading, setLoading]   = useState(true);
+  const [status, setStatus]     = useState<Status>("lobby");
 
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selected, setSelected]         = useState<string | null>(null);
@@ -26,37 +30,46 @@ export default function ExamPage() {
   useEffect(() => {
     async function init() {
       const { data: { session } } = await supabase.auth.getSession();
-      if (!session) { router.replace("/"); return; }
+      if (!session) { window.location.href = "/"; return; }
 
       const authUser = session.user;
 
-      const { data: row } = await supabase
+      // Upsert so row always exists, then read has_completed
+      await supabase.from("users").upsert(
+        { id: authUser.id, email: authUser.email, has_completed: false },
+        { onConflict: "id", ignoreDuplicates: true }
+      );
+
+      const { data: userRow } = await supabase
         .from("users")
-        .upsert(
-          { id: authUser.id, email: authUser.email, has_completed: false },
-          { onConflict: "id", ignoreDuplicates: true }
-        )
         .select("id, email, has_completed")
-        .maybeSingle();
+        .eq("id", authUser.id)
+        .single();
 
-      const { data: existing } = row
-        ? { data: row }
-        : await supabase.from("users").select("id, email, has_completed").eq("id", authUser.id).single();
-
-      const userRow = row ?? existing;
       setUser({ id: authUser.id, email: authUser.email! });
-      if (userRow?.has_completed) setStatus("completed");
+
+      // Already finished before → skip lobby, go straight to leaderboard
+      if (userRow?.has_completed) {
+        setStatus("completed");
+      } else {
+        setStatus("lobby");   // ← waiting room: show Start Exam button
+      }
+
       setLoading(false);
     }
     init();
-  }, [router]);
+  }, []);
 
-  // ── Countdown ────────────────────────────────────────────────────
+  // ── Countdown (only runs when status === "active") ───────────────
   useEffect(() => {
     if (loading || status !== "active") return;
     const interval = setInterval(() => {
       setSecondsLeft((prev) => {
-        if (prev <= 1) { clearInterval(interval); handleTimeUp(); return 0; }
+        if (prev <= 1) {
+          clearInterval(interval);
+          handleTimeUp();
+          return 0;
+        }
         return prev - 1;
       });
     }, 1000);
@@ -69,12 +82,6 @@ export default function ExamPage() {
     setStatus("ended");
   }
 
-  async function handleLogout() {
-    await supabase.auth.signOut();
-    router.push("/");
-  }
-
-  // ── Submit answer ────────────────────────────────────────────────
   async function handleNextQuestion() {
     if (!user || !selected || submitting) return;
     setSubmitting(true);
@@ -100,26 +107,27 @@ export default function ExamPage() {
     }
   }
 
-  // ── Loading ──────────────────────────────────────────────────────
-  if (loading) {
-    return (
-      <main className="flex min-h-screen items-center justify-center">
-        <p className="text-slate-400 text-sm animate-pulse">Loading exam...</p>
-      </main>
-    );
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    window.location.href = "/";
   }
 
-  // ── Shared top bar (shown on completed + ended screens) ──────────
-  function TopBar() {
+  // ── Shared top bar ───────────────────────────────────────────────
+  function TopBar({ timer }: { timer?: boolean }) {
     return (
-      <header className="flex items-center justify-between">
-        <div>
+      <header className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
           <p className="text-xs text-slate-500">Logged in as</p>
-          <p className="text-sm font-medium text-slate-300">{user?.email}</p>
+          <p className="truncate text-sm font-medium text-slate-300">{user?.email}</p>
         </div>
+        {timer && (
+          <span className="shrink-0 rounded-full bg-slate-800 px-3 py-1 text-sm font-semibold text-slate-200">
+            ⏱ {Math.floor(secondsLeft / 60)}:{(secondsLeft % 60).toString().padStart(2, "0")}
+          </span>
+        )}
         <button
           onClick={handleLogout}
-          className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 transition hover:border-slate-500 hover:text-white"
+          className="shrink-0 rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 transition hover:border-slate-500 hover:text-white"
         >
           Log Out
         </button>
@@ -127,7 +135,45 @@ export default function ExamPage() {
     );
   }
 
-  // ── Already completed (reload) ───────────────────────────────────
+  // ── Loading ──────────────────────────────────────────────────────
+  if (loading) return (
+    <main className="flex min-h-screen items-center justify-center">
+      <p className="text-slate-400 text-sm animate-pulse">Loading...</p>
+    </main>
+  );
+
+  // ── LOBBY: logged in, haven't started yet ────────────────────────
+  if (status === "lobby") {
+    return (
+      <main className="mx-auto flex max-w-2xl flex-col gap-6 px-6 py-12">
+        <TopBar />
+        <div className="rounded-2xl border border-slate-800 bg-slate-900 p-8 shadow-xl">
+          <div className="mb-4 text-4xl">📝</div>
+          <h1 className="text-2xl font-bold">Ready for the Exam?</h1>
+          <p className="mt-2 text-slate-400">
+            You have <span className="font-semibold text-slate-200">{QUESTIONS.length} questions</span> and{" "}
+            <span className="font-semibold text-slate-200">
+              {Math.floor(EXAM_DURATION_SECONDS / 60)} minutes
+            </span>{" "}
+            to complete the exam. Once you start, the timer begins and cannot be paused.
+          </p>
+          <ul className="mt-4 flex flex-col gap-1.5 text-sm text-slate-400">
+            <li>✅ You can only take this exam once</li>
+            <li>✅ Each question must be answered before moving on</li>
+            <li>✅ Your answers are saved automatically</li>
+          </ul>
+          <button
+            onClick={() => setStatus("active")}
+            className="mt-8 w-full rounded-lg bg-indigo-500 px-4 py-3 font-medium text-white transition hover:bg-indigo-400"
+          >
+            Start Exam
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  // ── COMPLETED: already finished (reload / re-login) ──────────────
   if (status === "completed") {
     return (
       <main className="mx-auto flex max-w-2xl flex-col gap-6 px-6 py-12">
@@ -142,7 +188,7 @@ export default function ExamPage() {
     );
   }
 
-  // ── Just finished ────────────────────────────────────────────────
+  // ── ENDED: just finished in this session ─────────────────────────
   if (status === "ended") {
     return (
       <main className="mx-auto flex max-w-2xl flex-col gap-6 px-6 py-12">
@@ -157,35 +203,14 @@ export default function ExamPage() {
     );
   }
 
-  // ── Active exam ──────────────────────────────────────────────────
+  // ── ACTIVE: exam in progress ─────────────────────────────────────
   return (
     <main className="mx-auto flex max-w-2xl flex-col gap-6 px-6 py-12">
-
-      {/* Header: email + logout on left/right, timer centre */}
-      <header className="flex items-center justify-between gap-4">
-        <div className="min-w-0">
-          <p className="text-xs text-slate-500">Logged in as</p>
-          <p className="truncate text-sm font-medium text-slate-300">{user?.email}</p>
-        </div>
-
-        <span className="shrink-0 rounded-full bg-slate-800 px-3 py-1 text-sm font-semibold text-slate-200">
-          ⏱ {Math.floor(secondsLeft / 60)}:{(secondsLeft % 60).toString().padStart(2, "0")}
-        </span>
-
-        <button
-          onClick={handleLogout}
-          className="shrink-0 rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 transition hover:border-slate-500 hover:text-white"
-        >
-          Log Out
-        </button>
-      </header>
-
-      {/* Progress */}
+      <TopBar timer />
       <p className="text-sm font-medium text-slate-400">
         Question {currentIndex + 1} of {QUESTIONS.length}
       </p>
 
-      {/* Question card */}
       <section className="rounded-2xl border border-slate-800 bg-slate-900 p-8 shadow-xl">
         <h2 className="mb-6 text-xl font-medium">{currentQuestion.text}</h2>
         <div className="flex flex-col gap-3">

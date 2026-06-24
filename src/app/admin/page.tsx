@@ -1,29 +1,27 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import { supabase } from "../../lib/supabase";
 import Leaderboard from "../../components/Leaderboard";
 
 const ADMIN_EMAIL = "abir@209.com";
 
 export default function AdminPage() {
-  const router = useRouter();
-  const [verified, setVerified] = useState(false);
-  const [clearing, setClearing] = useState(false);
-  const [clearMsg, setClearMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [verified, setVerified]     = useState(false);
+  const [clearing, setClearing]     = useState(false);
+  const [clearMsg, setClearMsg]     = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       const email = session?.user?.email?.toLowerCase();
       if (!session || email !== ADMIN_EMAIL) {
-        router.replace("/");
+        window.location.href = "/";
       } else {
         setVerified(true);
       }
     });
-  }, [router]);
+  }, []);
 
   async function handleClearLeaderboard() {
     setClearing(true);
@@ -49,7 +47,6 @@ export default function AdminPage() {
     }
   }
 
-  // Hard redirect — bypasses any router/session cache issues
   async function handleLogout() {
     await supabase.auth.signOut();
     window.location.href = "/";
@@ -94,7 +91,7 @@ export default function AdminPage() {
           <div>
             <h2 className="text-base font-semibold">Clear Leaderboard</h2>
             <p className="mt-0.5 text-sm text-slate-400">
-              Deletes all submissions and resets exam completion status.
+              Deletes all submissions and resets exam completion for all students.
             </p>
           </div>
           <button

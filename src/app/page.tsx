@@ -5,28 +5,27 @@ import { useRouter } from "next/navigation";
 import { supabase } from "../lib/supabase";
 
 const ADMIN_EMAIL = "abir@209.com";
-
 type AuthMode = "login" | "register";
 
 export default function LoginPage() {
-  const router = useRouter();
-  const [mode, setMode] = useState<AuthMode>("login");
-  const [email, setEmail] = useState("");
+  const router  = useRouter();
+  const [mode, setMode]       = useState<AuthMode>("login");
+  const [email, setEmail]     = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError]     = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // On mount: if session already exists, redirect immediately
+  // If a session already exists skip the login page entirely
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session) {
-        const userEmail = session.user.email?.toLowerCase();
-        router.replace(userEmail === ADMIN_EMAIL ? "/admin" : "/exam");
+        const e = session.user.email?.toLowerCase();
+        window.location.href = e === ADMIN_EMAIL ? "/admin" : "/exam";
       } else {
         setLoading(false);
       }
     });
-  }, [router]);
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -47,48 +46,30 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      // ── Admin: only ever sign in, never sign up via the form ─────
-      if (trimmedEmail === ADMIN_EMAIL) {
-        const { error: signInErr } = await supabase.auth.signInWithPassword({
-          email: trimmedEmail,
-          password: trimmedPass,
-        });
-        if (signInErr) {
-          // Account doesn't exist yet — create it once using the service
-          // role is not available client-side, so we inform the admin.
-          setError(
-            "Admin account not found. Go to Supabase → Authentication → Users and create abir@209.com manually, then come back and sign in."
-          );
-          setLoading(false);
-          return;
-        }
-        router.push("/admin");
-        return;
-      }
-      // ─────────────────────────────────────────────────────────────
-
       if (mode === "register") {
+        // ── Register new student ──────────────────────────────────
         const { data, error: signUpErr } = await supabase.auth.signUp({
           email: trimmedEmail,
           password: trimmedPass,
         });
         if (signUpErr) throw signUpErr;
-
-        // Insert into public users table
         if (data.user) {
           await supabase.from("users").upsert(
             { id: data.user.id, email: trimmedEmail, has_completed: false },
             { onConflict: "id", ignoreDuplicates: true }
           );
         }
-        router.push("/exam");
+        window.location.href = "/exam";
       } else {
-        const { error: signInErr } = await supabase.auth.signInWithPassword({
+        // ── Login ─────────────────────────────────────────────────
+        const { data, error: signInErr } = await supabase.auth.signInWithPassword({
           email: trimmedEmail,
           password: trimmedPass,
         });
         if (signInErr) throw signInErr;
-        router.push("/exam");
+
+        const loggedEmail = data.user.email?.toLowerCase();
+        window.location.href = loggedEmail === ADMIN_EMAIL ? "/admin" : "/exam";
       }
     } catch (err: any) {
       setError(err.message || "An unexpected error occurred.");
@@ -96,13 +77,11 @@ export default function LoginPage() {
     }
   }
 
-  if (loading) {
-    return (
-      <main className="flex min-h-screen items-center justify-center">
-        <p className="text-slate-400 text-sm animate-pulse">Loading...</p>
-      </main>
-    );
-  }
+  if (loading) return (
+    <main className="flex min-h-screen items-center justify-center">
+      <p className="text-slate-400 text-sm animate-pulse">Loading...</p>
+    </main>
+  );
 
   return (
     <main className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center px-6">
@@ -123,9 +102,7 @@ export default function LoginPage() {
             type="button"
             onClick={() => { setMode("login"); setError(null); }}
             className={`flex-1 rounded-md py-2 text-sm font-medium transition ${
-              mode === "login"
-                ? "bg-indigo-500 text-white"
-                : "text-slate-400 hover:text-slate-200"
+              mode === "login" ? "bg-indigo-500 text-white" : "text-slate-400 hover:text-slate-200"
             }`}
           >
             Login
@@ -134,9 +111,7 @@ export default function LoginPage() {
             type="button"
             onClick={() => { setMode("register"); setError(null); }}
             className={`flex-1 rounded-md py-2 text-sm font-medium transition ${
-              mode === "register"
-                ? "bg-indigo-500 text-white"
-                : "text-slate-400 hover:text-slate-200"
+              mode === "register" ? "bg-indigo-500 text-white" : "text-slate-400 hover:text-slate-200"
             }`}
           >
             Register
@@ -179,9 +154,7 @@ export default function LoginPage() {
           >
             {loading
               ? "Please wait..."
-              : mode === "login"
-              ? "Sign In & Start Exam"
-              : "Register & Start Exam"}
+              : mode === "login" ? "Sign In" : "Register"}
           </button>
         </form>
       </div>
